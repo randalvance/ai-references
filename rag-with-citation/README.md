@@ -23,7 +23,7 @@ The model is instructed to answer **only** from the provided context and to say 
 ```
 backend/
   main.py              FastAPI app + endpoints
-  simple_citation.py   Claude prompt + chain (also runnable as CLI)
+  simple_citation.py   Claude prompt + chain
 frontend/
   src/App.jsx          UI: upload, ask, render answer w/ citations, PDF iframe
   src/App.css
@@ -68,16 +68,6 @@ Both commands are equivalent and launch the backend (`uvicorn --reload`) and the
 > http://localhost:5173
 
 The Vite dev server proxies `/api/*` to FastAPI, so the browser only talks to `5173`.
-
-## CLI sanity check
-
-Run the citation chain end-to-end without the UI:
-
-```bash
-./.venv/bin/python backend/simple_citation.py
-```
-
-Uses a hardcoded set of mini-documents and prints the model's cited answer.
 
 ## API reference
 
