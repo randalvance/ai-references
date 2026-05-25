@@ -1,0 +1,16 @@
+{
+  "name": "rag-with-citation",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend -c blue,magenta \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "start": "npm run dev",
+    "dev:backend": "./.venv/bin/uvicorn main:app --reload --host 127.0.0.1 --port 8000 --app-dir backend",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "install:all": "npm install && npm --prefix frontend install && ./.venv/bin/pip install -r requirements.txt",
+    "build": "npm --prefix frontend run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}

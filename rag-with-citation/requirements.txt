@@ -1,0 +1,7 @@
+langchain
+langchain-anthropic
+python-dotenv
+pypdf
+fastapi
+uvicorn
+python-multipart
