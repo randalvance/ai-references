@@ -132,3 +132,33 @@ button:disabled {
   font-weight: 600;
   cursor: pointer;
 }
+
+.docx-view {
+  padding: 20px 24px;
+  overflow-y: auto;
+  height: 100%;
+  min-height: 600px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.docx-view .para {
+  margin: 0 0 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background-color 0.4s ease;
+  position: relative;
+}
+
+.docx-view .para.highlight {
+  background: #fef3c7;
+}
+
+.docx-view .para-num {
+  display: inline-block;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 8px;
+  user-select: none;
+}

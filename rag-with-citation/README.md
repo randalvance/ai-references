@@ -1,6 +1,6 @@
 # RAG with Citation
 
-An implementation reference for answering questions about a PDF with **clickable page citations** that jump the embedded PDF viewer to the cited page.
+An implementation reference for answering questions about a **PDF or Word document** with clickable citations that jump the viewer to the cited source.
 
 Built as a small full-stack app:
 
@@ -12,9 +12,18 @@ A single root command boots both servers.
 
 ## How citations work
 
-1. The user uploads a PDF. The backend extracts text page-by-page, labelling each chunk with its source page number.
-2. The system prompt instructs the model to cite the source page inline using the format `[[page:N]]` whenever it uses information from the PDF.
-3. The frontend parses the model's answer, replaces each `[[page:N]]` token with a clickable link, and rewrites the embedded PDF iframe's `src` to `#page=N` when clicked — so the viewer jumps to that page.
+The citation unit depends on the document type, because `.docx` files have no real page boundaries — pages are only computed when a word processor renders the file.
+
+| Format | Citation token   | Source unit | Viewer behaviour on click            |
+|--------|------------------|-------------|--------------------------------------|
+| `.pdf` | `[[page:N]]`     | PDF page    | iframe jumps to `#page=N`            |
+| `.docx`| `[[para:N]]`     | Paragraph   | viewer scrolls to and highlights `¶N` |
+
+For both formats:
+
+1. The backend extracts text, labelling each chunk with its page or paragraph index.
+2. The system prompt instructs the model to cite the source inline using the matching token.
+3. The frontend parses the model's answer, renders each token as a clickable link, and jumps the viewer to the cited unit.
 
 The model is instructed to answer **only** from the provided context and to say it does not know when the answer isn't there.
 
@@ -23,9 +32,9 @@ The model is instructed to answer **only** from the provided context and to say 
 ```
 backend/
   main.py              FastAPI app + endpoints
-  simple_citation.py   Claude prompt + chain
+  simple_citation.py   Claude prompt + chain (page or paragraph mode)
 frontend/
-  src/App.jsx          UI: upload, ask, render answer w/ citations, PDF iframe
+  src/App.jsx          UI: upload, ask, render citations, PDF iframe or DOCX paragraph view
   src/App.css
   vite.config.js       Dev-server proxy /api -> 127.0.0.1:8000
   index.html
@@ -73,20 +82,20 @@ The Vite dev server proxies `/api/*` to FastAPI, so the browser only talks to `5
 
 All endpoints are JSON unless noted. Errors return `{"detail": "..."}` with appropriate status codes.
 
-| Method | Path                | Body / Params                                  | Returns                              |
-|--------|---------------------|------------------------------------------------|--------------------------------------|
-| GET    | `/api/health`       | —                                              | `{ok, has_api_key}`                  |
-| POST   | `/api/upload`       | `multipart/form-data` with `file=<pdf>`        | `{pdf_id, url}`                      |
-| GET    | `/api/pdf/{id}`     | path param                                     | `application/pdf` stream             |
-| POST   | `/api/ask`          | `{pdf_id, question}`                           | `{answer}` (with inline `[[page:N]]`) |
+| Method | Path                | Body / Params                                          | Returns                                                           |
+|--------|---------------------|--------------------------------------------------------|-------------------------------------------------------------------|
+| GET    | `/api/health`       | —                                                      | `{ok, has_api_key}`                                               |
+| POST   | `/api/upload`       | `multipart/form-data` with `file=<.pdf or .docx>`      | `{pdf_id, kind, url?}` for PDF, `{pdf_id, kind, paragraphs[]}` for DOCX |
+| GET    | `/api/pdf/{id}`     | path param (PDF only)                                  | `application/pdf` stream                                          |
+| POST   | `/api/ask`          | `{pdf_id, question}`                                   | `{answer, kind}` with inline `[[page:N]]` or `[[para:N]]`         |
 
 Example:
 
 ```bash
-PDF_ID=$(curl -s -F "file=@example.pdf" http://localhost:8000/api/upload | jq -r .pdf_id)
+ID=$(curl -s -F "file=@example.pdf" http://localhost:8000/api/upload | jq -r .pdf_id)
 curl -s http://localhost:8000/api/ask \
   -H 'Content-Type: application/json' \
-  -d "{\"pdf_id\":\"$PDF_ID\",\"question\":\"Summarise section 2.\"}"
+  -d "{\"pdf_id\":\"$ID\",\"question\":\"Summarise section 2.\"}"
 ```
 
 ## Troubleshooting
@@ -94,4 +103,5 @@ curl -s http://localhost:8000/api/ask \
 - **`ANTHROPIC_API_KEY is not set`** — `.env` is loaded by the backend on startup; restart `npm run dev` after editing it.
 - **Port already in use** — kill leftover processes: `lsof -ti:8000,5173 | xargs kill -9`.
 - **PDF text is empty** — scanned/image-only PDFs have no extractable text; OCR them first.
-- **Citations don't appear** — the model only cites pages it actually used; if the answer doesn't reference the PDF, no citations will render.
+- **DOCX has no `.docx` extension** — only `.docx` is supported; legacy `.doc` files need to be re-saved or converted first.
+- **Citations don't appear** — the model only cites sources it actually used; if the answer doesn't reference the document, no citations will render.
