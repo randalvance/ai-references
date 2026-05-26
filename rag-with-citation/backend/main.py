@@ -1,6 +1,7 @@
 import os
 import tempfile
 import uuid
+from html import escape as html_escape
 from pathlib import Path
 from typing import Literal
 
@@ -11,6 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from pypdf import PdfReader
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate
 
 from simple_citation import get_citation_response
 
@@ -37,7 +42,7 @@ class AskRequest(BaseModel):
     question: str
 
 
-def _resolve(pdf_id: str) -> tuple[Path, DocKind]:
+def _source_path(pdf_id: str) -> tuple[Path, DocKind]:
     if not pdf_id or "/" in pdf_id or "\\" in pdf_id or ".." in pdf_id:
         raise HTTPException(status_code=400, detail="Invalid id")
     for ext, kind in SUPPORTED_EXTS.items():
@@ -45,6 +50,11 @@ def _resolve(pdf_id: str) -> tuple[Path, DocKind]:
         if candidate.exists():
             return candidate, kind
     raise HTTPException(status_code=404, detail="Document not found")
+
+
+def _pdf_path(pdf_id: str) -> Path:
+    # Rendered/served PDF — same name for native PDFs and DOCX-converted ones.
+    return UPLOAD_DIR / f"{pdf_id}.pdf"
 
 
 def _extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
@@ -65,6 +75,49 @@ def _extract_docx_paragraphs(path: Path) -> list[tuple[int, str]]:
         if text:
             out.append((i, text))
     return out
+
+
+class _PageTracker(Flowable):
+    """Zero-height flowable that records the page it draws on."""
+
+    def __init__(self, idx: int, mapping: dict[int, int]):
+        super().__init__()
+        self.idx = idx
+        self.mapping = mapping
+
+    def wrap(self, _availWidth, _availHeight):
+        return 0.001, 0.001
+
+    def draw(self):
+        self.mapping[self.idx] = self.canv.getPageNumber()
+
+
+def _render_docx_to_pdf(
+    paragraphs: list[tuple[int, str]], out_path: Path
+) -> dict[int, int]:
+    """Render paragraphs to a PDF; return {paragraph_index: starting_page}."""
+    mapping: dict[int, int] = {}
+    styles = getSampleStyleSheet()
+    body = styles["BodyText"]
+    body.leading = 15
+    body.spaceAfter = 8
+    body.fontSize = 11
+
+    doc = SimpleDocTemplate(
+        str(out_path),
+        pagesize=letter,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+    )
+
+    story: list = []
+    for idx, text in paragraphs:
+        story.append(_PageTracker(idx, mapping))
+        story.append(Paragraph(html_escape(text), body))
+    doc.build(story)
+    return mapping
 
 
 def _build_context(kind: DocKind, path: Path) -> str:
@@ -90,24 +143,32 @@ async def upload_doc(file: UploadFile = File(...)):
 
     kind = SUPPORTED_EXTS[ext]
     pdf_id = uuid.uuid4().hex
-    dest = UPLOAD_DIR / f"{pdf_id}{ext}"
-    dest.write_bytes(await file.read())
+    source = UPLOAD_DIR / f"{pdf_id}{ext}"
+    source.write_bytes(await file.read())
 
-    response: dict = {"pdf_id": pdf_id, "kind": kind}
+    response: dict = {"pdf_id": pdf_id, "kind": kind, "url": f"/api/pdf/{pdf_id}"}
     if kind == "pdf":
-        response["url"] = f"/api/pdf/{pdf_id}"
+        # Native PDF — served directly.
+        pdf_dest = _pdf_path(pdf_id)
+        if source != pdf_dest:
+            pdf_dest.write_bytes(source.read_bytes())
     else:
-        paragraphs = _extract_docx_paragraphs(dest)
-        response["paragraphs"] = [{"index": n, "text": t} for n, t in paragraphs]
+        paragraphs = _extract_docx_paragraphs(source)
+        page_map = _render_docx_to_pdf(paragraphs, _pdf_path(pdf_id))
+        response["paragraphs"] = [
+            {"index": n, "text": t, "page": page_map.get(n, 1)}
+            for n, t in paragraphs
+        ]
     return response
 
 
 @app.get("/api/pdf/{pdf_id}")
 def get_pdf(pdf_id: str):
-    path, kind = _resolve(pdf_id)
-    if kind != "pdf":
-        raise HTTPException(status_code=400, detail="Not a PDF")
-    return FileResponse(str(path), media_type="application/pdf")
+    _source_path(pdf_id)  # validate id + existence
+    pdf = _pdf_path(pdf_id)
+    if not pdf.exists():
+        raise HTTPException(status_code=404, detail="Rendered PDF not found")
+    return FileResponse(str(pdf), media_type="application/pdf")
 
 
 @app.post("/api/ask")
@@ -117,7 +178,7 @@ def ask(req: AskRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question is required")
 
-    path, kind = _resolve(req.pdf_id)
+    path, kind = _source_path(req.pdf_id)
     context = _build_context(kind, path).strip()
     if not context:
         raise HTTPException(status_code=400, detail="Could not extract text from document")

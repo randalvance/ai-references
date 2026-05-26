@@ -3,6 +3,7 @@ langchain-anthropic
 python-dotenv
 pypdf
 python-docx
+reportlab
 fastapi
 uvicorn
 python-multipart

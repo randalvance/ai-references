@@ -49,11 +49,56 @@ header p {
   overflow: hidden;
 }
 
-.viewer iframe {
-  width: 100%;
+.pdf-view {
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 600px;
-  border: 0;
+}
+
+.pdf-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fafafa;
+}
+
+.pdf-controls button {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.pdf-page-label {
+  font-size: 13px;
+  color: #4b5563;
+}
+
+.pdf-canvas-wrap {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+  background: #e5e7eb;
+}
+
+.pdf-canvas-wrap .react-pdf__Page {
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.pdf-canvas-wrap .react-pdf__Page__canvas {
+  max-width: 100%;
+  height: auto !important;
+}
+
+.react-pdf__Page__textContent mark.para-highlight {
+  background: #fde68a;
+  color: transparent;
+  padding: 0;
+  border-radius: 2px;
 }
 
 .placeholder {
@@ -133,32 +178,3 @@ button:disabled {
   cursor: pointer;
 }
 
-.docx-view {
-  padding: 20px 24px;
-  overflow-y: auto;
-  height: 100%;
-  min-height: 600px;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.docx-view .para {
-  margin: 0 0 12px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  transition: background-color 0.4s ease;
-  position: relative;
-}
-
-.docx-view .para.highlight {
-  background: #fef3c7;
-}
-
-.docx-view .para-num {
-  display: inline-block;
-  color: #9ca3af;
-  font-size: 11px;
-  font-weight: 600;
-  margin-right: 8px;
-  user-select: none;
-}

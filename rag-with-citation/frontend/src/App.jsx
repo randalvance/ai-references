@@ -1,4 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Document, Page, pdfjs } from 'react-pdf'
+import 'react-pdf/dist/Page/AnnotationLayer.css'
+import 'react-pdf/dist/Page/TextLayer.css'
+
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString()
 
 function renderAnswer(text, onCitationClick) {
   const parts = []
@@ -34,20 +42,57 @@ function renderAnswer(text, onCitationClick) {
   return parts
 }
 
+function escapeHtml(s) {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
 export default function App() {
-  const [doc, setDoc] = useState(null) // { id, kind, url?, paragraphs? }
+  const [doc, setDoc] = useState(null) // { id, kind, url, paragraphs? }
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState('')
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
   const [asking, setAsking] = useState(false)
   const [page, setPage] = useState(1)
+  const [numPages, setNumPages] = useState(0)
   const [highlightPara, setHighlightPara] = useState(null)
+  const [pageWidth, setPageWidth] = useState(800)
+  const viewerRef = useRef(null)
 
-  const iframeSrc = useMemo(() => {
-    if (!doc || doc.kind !== 'pdf') return null
-    return `${doc.url}#page=${page}&toolbar=0`
-  }, [doc, page])
+  useEffect(() => {
+    const el = viewerRef.current
+    if (!el) return
+    const update = () => setPageWidth(Math.max(320, el.clientWidth - 24))
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [doc])
+
+  const highlightParaText = useMemo(() => {
+    if (!highlightPara || !doc?.paragraphs) return null
+    return doc.paragraphs.find((p) => p.index === highlightPara)?.text || null
+  }, [highlightPara, doc])
+
+  const textRenderer = useCallback(
+    (item) => {
+      const str = item.str
+      if (!highlightParaText || !str || !str.trim()) return escapeHtml(str)
+      // Wrap the span if its text is a slice of the highlighted paragraph.
+      // Reportlab renders one text item per line, so each item.str is
+      // typically a continuous substring of the paragraph's text.
+      const trimmed = str.trim()
+      if (trimmed.length >= 2 && highlightParaText.includes(trimmed)) {
+        return `<mark class="para-highlight">${escapeHtml(str)}</mark>`
+      }
+      return escapeHtml(str)
+    },
+    [highlightParaText],
+  )
 
   async function handleUpload(e) {
     const file = e.target.files?.[0]
@@ -68,6 +113,7 @@ export default function App() {
         paragraphs: data.paragraphs,
       })
       setPage(1)
+      setNumPages(0)
       setHighlightPara(null)
     } catch (err) {
       setError(err.message)
@@ -106,12 +152,17 @@ export default function App() {
 
   function handleCitationClick(type, n) {
     if (type === 'page') {
-      setPage(n)
-    } else {
-      setHighlightPara(n)
-      const el = document.getElementById(`para-${n}`)
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      const target = numPages ? Math.min(Math.max(1, n), numPages) : Math.max(1, n)
+      setPage(target)
+      setHighlightPara(null)
+      return
     }
+    // paragraph citation — map to page via doc.paragraphs
+    const para = doc?.paragraphs?.find((p) => p.index === n)
+    if (para?.page) {
+      setPage(numPages ? Math.min(Math.max(1, para.page), numPages) : para.page)
+    }
+    setHighlightPara(n)
   }
 
   return (
@@ -151,25 +202,45 @@ export default function App() {
           )}
         </section>
 
-        <section className="panel viewer">
+        <section className="panel viewer" ref={viewerRef}>
           {!doc && <div className="placeholder">Document preview will appear here.</div>}
 
-          {doc?.kind === 'pdf' && iframeSrc && (
-            <iframe key={iframeSrc} src={iframeSrc} title="PDF viewer" />
-          )}
-
-          {doc?.kind === 'docx' && (
-            <div className="docx-view">
-              {doc.paragraphs?.map((p) => (
-                <p
-                  key={p.index}
-                  id={`para-${p.index}`}
-                  className={highlightPara === p.index ? 'para highlight' : 'para'}
+          {doc && (
+            <div className="pdf-view">
+              <div className="pdf-controls">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
                 >
-                  <span className="para-num">¶ {p.index}</span>
-                  {p.text}
-                </p>
-              ))}
+                  Prev
+                </button>
+                <span className="pdf-page-label">
+                  Page {page}
+                  {numPages ? ` of ${numPages}` : ''}
+                </span>
+                <button
+                  onClick={() => setPage((p) => (numPages ? Math.min(numPages, p + 1) : p + 1))}
+                  disabled={numPages > 0 && page >= numPages}
+                >
+                  Next
+                </button>
+              </div>
+              <div className="pdf-canvas-wrap">
+                <Document
+                  file={doc.url}
+                  onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+                  onLoadError={(err) => setError(`Failed to load PDF: ${err.message}`)}
+                  loading={<div className="placeholder">Loading PDF…</div>}
+                >
+                  <Page
+                    pageNumber={page}
+                    width={pageWidth}
+                    renderAnnotationLayer={false}
+                    renderTextLayer={true}
+                    customTextRenderer={textRenderer}
+                  />
+                </Document>
+              </div>
             </div>
           )}
         </section>
