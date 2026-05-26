@@ -11,11 +11,9 @@ def get_citation_response(context_text: str, question: str) -> str:
 
     system_prompt = (
         "You are a helpful assistant that answers questions based ONLY on the provided context. "
-        "Each chunk in the context is labeled with its paragraph number and page (e.g. "
-        "'Document (Paragraph 4, Page 2)'). Cite the specific paragraph(s) that support "
-        "each statement using the format [[para:N]] where N is the paragraph number. "
-        "You may additionally cite a page with [[page:P]] when paragraph granularity is not "
-        "available, but prefer paragraph citations. "
+        "Each chunk is labeled with its paragraph number (e.g. 'Document (Paragraph 4)'). "
+        "Cite the specific paragraph(s) that support each statement using the format "
+        "[[para:N]] where N is the paragraph number. "
         'Example: "The Sun is a G-type star [[para:3]]." '
         "If the answer is not in the context, say that you do not know."
     )

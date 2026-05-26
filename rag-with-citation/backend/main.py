@@ -175,7 +175,7 @@ def _extract_pdf_paragraphs(path: Path) -> tuple[list[dict], float, float]:
             ).strip()
             if not text:
                 continue
-            x0, y0, x1, y1 = block["bbox"]
+            _, y0, _, y1 = block["bbox"]
             idx += 1
             paragraphs.append(
                 {
@@ -193,10 +193,9 @@ def _extract_pdf_paragraphs(path: Path) -> tuple[list[dict], float, float]:
 # -------- Context builders + endpoints --------
 
 
-def _build_context(kind: DocKind, paragraphs: list[dict]) -> str:
+def _build_context(paragraphs: list[dict]) -> str:
     return "\n\n".join(
-        f"Document (Paragraph {p['index']}, Page {p['page']}):\n{p['text']}"
-        for p in paragraphs
+        f"Document (Paragraph {p['index']}):\n{p['text']}" for p in paragraphs
     )
 
 
@@ -248,15 +247,14 @@ def get_pdf(pdf_id: str):
     return FileResponse(str(pdf), media_type="application/pdf")
 
 
-def _paragraphs_for(pdf_id: str) -> list[dict]:
-    """Re-extract paragraphs for /api/ask. Mirrors what /api/upload returned."""
-    source, kind = _source_path(pdf_id)
+def _paragraphs_for(source: Path, kind: DocKind, pdf_id: str) -> list[dict]:
+    """Re-extract paragraphs for /api/ask. Only (index, text) are used downstream."""
     if kind == "pdf":
         paragraphs, _, _ = _extract_pdf_paragraphs(_pdf_path(pdf_id))
         return paragraphs
-    docx_paragraphs = _extract_docx_paragraphs(source)
-    # We don't need layout here, just text — layout was returned to the client at upload.
-    return [{"index": n, "text": t, "page": 0} for n, t in docx_paragraphs]
+    return [
+        {"index": n, "text": t} for n, t in _extract_docx_paragraphs(source)
+    ]
 
 
 @app.post("/api/ask")
@@ -266,9 +264,9 @@ def ask(req: AskRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question is required")
 
-    _, kind = _source_path(req.pdf_id)
-    paragraphs = _paragraphs_for(req.pdf_id)
-    context = _build_context(kind, paragraphs).strip()
+    source, kind = _source_path(req.pdf_id)
+    paragraphs = _paragraphs_for(source, kind, req.pdf_id)
+    context = _build_context(paragraphs).strip()
     if not context:
         raise HTTPException(status_code=400, detail="Could not extract text from document")
 
