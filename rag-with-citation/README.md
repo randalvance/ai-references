@@ -1,10 +1,10 @@
 # RAG with Citation
 
-An implementation reference for answering questions about a **PDF or Word document** with clickable citations that jump the viewer to the cited source.
+An implementation reference for answering questions about a **PDF or Word document** with clickable citations that jump the viewer to the cited paragraph.
 
 Built as a small full-stack app:
 
-- **Frontend** — React + Vite (port `5173`)
+- **Frontend** — React + Vite + `react-pdf` (port `5173`)
 - **Backend** — FastAPI (port `8000`)
 - **LLM** — Anthropic Claude via `langchain-anthropic`
 
@@ -12,18 +12,11 @@ A single root command boots both servers.
 
 ## How citations work
 
-The citation unit depends on the document type, because `.docx` files have no real page boundaries — pages are only computed when a word processor renders the file.
+Citations are paragraph-level for both formats. `.docx` files have no real page boundaries, so the backend renders the DOCX into a PDF (via ReportLab) and records where each paragraph lands. Native PDFs are parsed with PyMuPDF, which gives the bounding box of each text block directly.
 
-| Format | Citation token   | Source unit | Viewer behaviour on click            |
-|--------|------------------|-------------|--------------------------------------|
-| `.pdf` | `[[page:N]]`     | PDF page    | iframe jumps to `#page=N`            |
-| `.docx`| `[[para:N]]`     | Paragraph   | viewer scrolls to and highlights `¶N` |
-
-For both formats:
-
-1. The backend extracts text, labelling each chunk with its page or paragraph index.
-2. The system prompt instructs the model to cite the source inline using the matching token.
-3. The frontend parses the model's answer, renders each token as a clickable link, and jumps the viewer to the cited unit.
+1. The backend extracts text, labelling each chunk with its paragraph index, and records the page + top/bottom Y in PDF points.
+2. The system prompt instructs the model to cite the source inline as `[[para:N]]`.
+3. The frontend parses the model's answer, renders each `[[para:N]]` as a clickable link, and on click jumps `react-pdf` to the matching page and overlays a highlight band on that paragraph's coordinates.
 
 The model is instructed to answer **only** from the provided context and to say it does not know when the answer isn't there.
 
@@ -32,9 +25,18 @@ The model is instructed to answer **only** from the provided context and to say 
 ```
 backend/
   main.py              FastAPI app + endpoints
-  simple_citation.py   Claude prompt + chain (page or paragraph mode)
+  storage.py           Upload paths, doc-kind detection, page constants
+  pdf_extract.py       Native PDF -> paragraphs (PyMuPDF)
+  docx_render.py       DOCX -> rendered PDF + per-paragraph layout
+  simple_citation.py   Claude prompt + chain
 frontend/
-  src/App.jsx          UI: upload, ask, render citations, PDF iframe or DOCX paragraph view
+  src/App.jsx                          Composition + top-level state
+  src/components/UploadAndAsk.jsx      Upload, question, answer panel
+  src/components/AnswerWithCitations.jsx
+  src/components/PdfViewer.jsx         react-pdf viewer + highlight band
+  src/lib/api.js                       /api wrappers, snake_case -> camelCase
+  src/lib/parseCitations.js            [[para:N]] parser
+  src/lib/computeHighlightBand.js      Paragraph coords -> canvas px
   src/App.css
   vite.config.js       Dev-server proxy /api -> 127.0.0.1:8000
   index.html
@@ -82,20 +84,22 @@ The Vite dev server proxies `/api/*` to FastAPI, so the browser only talks to `5
 
 All endpoints are JSON unless noted. Errors return `{"detail": "..."}` with appropriate status codes.
 
-| Method | Path                | Body / Params                                          | Returns                                                           |
-|--------|---------------------|--------------------------------------------------------|-------------------------------------------------------------------|
-| GET    | `/api/health`       | —                                                      | `{ok, has_api_key}`                                               |
-| POST   | `/api/upload`       | `multipart/form-data` with `file=<.pdf or .docx>`      | `{pdf_id, kind, url?}` for PDF, `{pdf_id, kind, paragraphs[]}` for DOCX |
-| GET    | `/api/pdf/{id}`     | path param (PDF only)                                  | `application/pdf` stream                                          |
-| POST   | `/api/ask`          | `{pdf_id, question}`                                   | `{answer, kind}` with inline `[[page:N]]` or `[[para:N]]`         |
+| Method | Path                | Body / Params                                          | Returns                                                                |
+|--------|---------------------|--------------------------------------------------------|------------------------------------------------------------------------|
+| GET    | `/api/health`       | —                                                      | `{ok, has_api_key}`                                                    |
+| POST   | `/api/upload`       | `multipart/form-data` with `file=<.pdf or .docx>`      | `{doc_id, kind, url, page_width, page_height, paragraphs[]}`           |
+| GET    | `/api/pdf/{doc_id}` | path param                                             | `application/pdf` stream (native PDF or DOCX-rendered PDF)             |
+| POST   | `/api/ask`          | `{doc_id, question}`                                   | `{answer, kind}` with inline `[[para:N]]`                              |
+
+Each entry in `paragraphs[]` has `{index, text, page, top, bottom}` in PDF points (top-left origin). Extracted paragraphs are cached in-process and re-extracted on demand after a server restart.
 
 Example:
 
 ```bash
-ID=$(curl -s -F "file=@example.pdf" http://localhost:8000/api/upload | jq -r .pdf_id)
+ID=$(curl -s -F "file=@example.pdf" http://localhost:8000/api/upload | jq -r .doc_id)
 curl -s http://localhost:8000/api/ask \
   -H 'Content-Type: application/json' \
-  -d "{\"pdf_id\":\"$ID\",\"question\":\"Summarise section 2.\"}"
+  -d "{\"doc_id\":\"$ID\",\"question\":\"Summarise section 2.\"}"
 ```
 
 ## Troubleshooting
