@@ -2,6 +2,7 @@ langchain
 langchain-anthropic
 python-dotenv
 pypdf
+pymupdf
 python-docx
 reportlab
 fastapi

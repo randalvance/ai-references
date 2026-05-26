@@ -5,13 +5,13 @@ from html import escape as html_escape
 from pathlib import Path
 from typing import Literal
 
+import fitz  # PyMuPDF
 from docx import Document
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from pypdf import PdfReader
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -26,6 +26,9 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 DocKind = Literal["pdf", "docx"]
 SUPPORTED_EXTS: dict[str, DocKind] = {".pdf": "pdf", ".docx": "docx"}
+
+PAGE_WIDTH_PT, PAGE_HEIGHT_PT = letter
+PAGE_MARGIN_PT = 0.75 * inch
 
 app = FastAPI(title="RAG with Citation API")
 
@@ -53,18 +56,11 @@ def _source_path(pdf_id: str) -> tuple[Path, DocKind]:
 
 
 def _pdf_path(pdf_id: str) -> Path:
-    # Rendered/served PDF — same name for native PDFs and DOCX-converted ones.
+    """Path of the PDF served to the viewer (native PDF, or DOCX-converted PDF)."""
     return UPLOAD_DIR / f"{pdf_id}.pdf"
 
 
-def _extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
-    reader = PdfReader(str(path))
-    out: list[tuple[int, str]] = []
-    for i, page in enumerate(reader.pages, start=1):
-        text = (page.extract_text() or "").strip()
-        if text:
-            out.append((i, text))
-    return out
+# -------- DOCX -> rendered PDF + paragraph layout --------
 
 
 def _extract_docx_paragraphs(path: Path) -> list[tuple[int, str]]:
@@ -78,25 +74,36 @@ def _extract_docx_paragraphs(path: Path) -> list[tuple[int, str]]:
 
 
 class _PageTracker(Flowable):
-    """Zero-height flowable that records the page it draws on."""
+    """Zero-height flowable that records the page + PDF-coord Y at draw time."""
 
-    def __init__(self, idx: int, mapping: dict[int, int]):
+    def __init__(self, idx: int, mapping: dict[int, dict], end: bool = False):
         super().__init__()
         self.idx = idx
         self.mapping = mapping
+        self.end = end
 
     def wrap(self, _availWidth, _availHeight):
         return 0.001, 0.001
 
     def draw(self):
-        self.mapping[self.idx] = self.canv.getPageNumber()
+        _, y_from_bottom = self.canv.absolutePosition(0, 0)
+        # Convert to top-left origin (y measured from the top of the page).
+        y_from_top = PAGE_HEIGHT_PT - y_from_bottom
+        page = self.canv.getPageNumber()
+        entry = self.mapping.setdefault(self.idx, {})
+        if self.end:
+            entry["bottom_page"] = page
+            entry["bottom"] = y_from_top
+        else:
+            entry["top_page"] = page
+            entry["top"] = y_from_top
 
 
 def _render_docx_to_pdf(
     paragraphs: list[tuple[int, str]], out_path: Path
-) -> dict[int, int]:
-    """Render paragraphs to a PDF; return {paragraph_index: starting_page}."""
-    mapping: dict[int, int] = {}
+) -> dict[int, dict]:
+    """Render paragraphs to a PDF; return per-paragraph layout info."""
+    mapping: dict[int, dict] = {}
     styles = getSampleStyleSheet()
     body = styles["BodyText"]
     body.leading = 15
@@ -106,26 +113,91 @@ def _render_docx_to_pdf(
     doc = SimpleDocTemplate(
         str(out_path),
         pagesize=letter,
-        leftMargin=0.75 * inch,
-        rightMargin=0.75 * inch,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
+        leftMargin=PAGE_MARGIN_PT,
+        rightMargin=PAGE_MARGIN_PT,
+        topMargin=PAGE_MARGIN_PT,
+        bottomMargin=PAGE_MARGIN_PT,
     )
 
     story: list = []
     for idx, text in paragraphs:
-        story.append(_PageTracker(idx, mapping))
+        story.append(_PageTracker(idx, mapping, end=False))
         story.append(Paragraph(html_escape(text), body))
+        story.append(_PageTracker(idx, mapping, end=True))
     doc.build(story)
     return mapping
 
 
-def _build_context(kind: DocKind, path: Path) -> str:
-    if kind == "pdf":
-        chunks = _extract_pdf_pages(path)
-        return "\n\n".join(f"Document (PDF Page {n}):\n{t}" for n, t in chunks)
-    chunks = _extract_docx_paragraphs(path)
-    return "\n\n".join(f"Document (Paragraph {n}):\n{t}" for n, t in chunks)
+def _docx_paragraph_payload(n: int, text: str, info: dict) -> dict:
+    top_page = info.get("top_page", 1)
+    bottom_page = info.get("bottom_page", top_page)
+    top = info.get("top", PAGE_MARGIN_PT)
+    bottom = (
+        info.get("bottom", top)
+        if bottom_page == top_page
+        else PAGE_HEIGHT_PT - PAGE_MARGIN_PT  # band extends to bottom margin on the start page
+    )
+    return {
+        "index": n,
+        "text": text,
+        "page": top_page,
+        "top": top,
+        "bottom": bottom,
+    }
+
+
+# -------- Native PDF -> paragraph extraction with bboxes --------
+
+
+def _extract_pdf_paragraphs(path: Path) -> tuple[list[dict], float, float]:
+    """Extract paragraphs from a native PDF using PyMuPDF.
+
+    Returns (paragraphs, page_width, page_height). Each paragraph has:
+        index, text, page (1-based), top, bottom (PDF points, top-left origin).
+    """
+    doc = fitz.open(str(path))
+    paragraphs: list[dict] = []
+    page_width = PAGE_WIDTH_PT
+    page_height = PAGE_HEIGHT_PT
+    idx = 0
+    for page_idx, page in enumerate(doc, start=1):
+        if page_idx == 1:
+            page_width = page.rect.width
+            page_height = page.rect.height
+        blocks = page.get_text("dict").get("blocks", [])
+        for block in blocks:
+            if block.get("type") != 0:  # 0 = text block; skip images / drawings
+                continue
+            text = " ".join(
+                span["text"]
+                for line in block.get("lines", [])
+                for span in line.get("spans", [])
+            ).strip()
+            if not text:
+                continue
+            x0, y0, x1, y1 = block["bbox"]
+            idx += 1
+            paragraphs.append(
+                {
+                    "index": idx,
+                    "text": text,
+                    "page": page_idx,
+                    "top": y0,
+                    "bottom": y1,
+                }
+            )
+    doc.close()
+    return paragraphs, page_width, page_height
+
+
+# -------- Context builders + endpoints --------
+
+
+def _build_context(kind: DocKind, paragraphs: list[dict]) -> str:
+    return "\n\n".join(
+        f"Document (Paragraph {p['index']}, Page {p['page']}):\n{p['text']}"
+        for p in paragraphs
+    )
 
 
 @app.get("/api/health")
@@ -148,27 +220,43 @@ async def upload_doc(file: UploadFile = File(...)):
 
     response: dict = {"pdf_id": pdf_id, "kind": kind, "url": f"/api/pdf/{pdf_id}"}
     if kind == "pdf":
-        # Native PDF — served directly.
         pdf_dest = _pdf_path(pdf_id)
         if source != pdf_dest:
             pdf_dest.write_bytes(source.read_bytes())
+        paragraphs, page_width, page_height = _extract_pdf_paragraphs(pdf_dest)
+        response["page_width"] = page_width
+        response["page_height"] = page_height
+        response["paragraphs"] = paragraphs
     else:
-        paragraphs = _extract_docx_paragraphs(source)
-        page_map = _render_docx_to_pdf(paragraphs, _pdf_path(pdf_id))
+        docx_paragraphs = _extract_docx_paragraphs(source)
+        layout = _render_docx_to_pdf(docx_paragraphs, _pdf_path(pdf_id))
+        response["page_width"] = PAGE_WIDTH_PT
+        response["page_height"] = PAGE_HEIGHT_PT
         response["paragraphs"] = [
-            {"index": n, "text": t, "page": page_map.get(n, 1)}
-            for n, t in paragraphs
+            _docx_paragraph_payload(n, t, layout.get(n, {}))
+            for n, t in docx_paragraphs
         ]
     return response
 
 
 @app.get("/api/pdf/{pdf_id}")
 def get_pdf(pdf_id: str):
-    _source_path(pdf_id)  # validate id + existence
+    _source_path(pdf_id)
     pdf = _pdf_path(pdf_id)
     if not pdf.exists():
         raise HTTPException(status_code=404, detail="Rendered PDF not found")
     return FileResponse(str(pdf), media_type="application/pdf")
+
+
+def _paragraphs_for(pdf_id: str) -> list[dict]:
+    """Re-extract paragraphs for /api/ask. Mirrors what /api/upload returned."""
+    source, kind = _source_path(pdf_id)
+    if kind == "pdf":
+        paragraphs, _, _ = _extract_pdf_paragraphs(_pdf_path(pdf_id))
+        return paragraphs
+    docx_paragraphs = _extract_docx_paragraphs(source)
+    # We don't need layout here, just text — layout was returned to the client at upload.
+    return [{"index": n, "text": t, "page": 0} for n, t in docx_paragraphs]
 
 
 @app.post("/api/ask")
@@ -178,10 +266,11 @@ def ask(req: AskRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question is required")
 
-    path, kind = _source_path(req.pdf_id)
-    context = _build_context(kind, path).strip()
+    _, kind = _source_path(req.pdf_id)
+    paragraphs = _paragraphs_for(req.pdf_id)
+    context = _build_context(kind, paragraphs).strip()
     if not context:
         raise HTTPException(status_code=400, detail="Could not extract text from document")
 
-    answer = get_citation_response(context, req.question, kind=kind)
+    answer = get_citation_response(context, req.question)
     return {"answer": answer, "kind": kind}

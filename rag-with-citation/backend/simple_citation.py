@@ -1,5 +1,3 @@
-from typing import Literal
-
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_core.output_parsers import StrOutputParser
@@ -7,23 +5,18 @@ from langchain_core.prompts import ChatPromptTemplate
 
 load_dotenv()
 
-DocKind = Literal["pdf", "docx"]
 
-_CITE_SPECS: dict[DocKind, tuple[str, str]] = {
-    "pdf": ("[[page:X]]", "PDF page"),
-    "docx": ("[[para:X]]", "paragraph"),
-}
-
-
-def get_citation_response(context_text: str, question: str, kind: DocKind = "pdf") -> str:
-    token, unit = _CITE_SPECS[kind]
+def get_citation_response(context_text: str, question: str) -> str:
     model = ChatAnthropic(model="claude-opus-4-7")
 
     system_prompt = (
         "You are a helpful assistant that answers questions based ONLY on the provided context. "
-        f"When you provide information, you MUST cite the specific {unit} it came from using "
-        f"the format {token} where X is the {unit} number. "
-        f'Example: "The Sun is a G-type star {token.replace("X", "1")}." '
+        "Each chunk in the context is labeled with its paragraph number and page (e.g. "
+        "'Document (Paragraph 4, Page 2)'). Cite the specific paragraph(s) that support "
+        "each statement using the format [[para:N]] where N is the paragraph number. "
+        "You may additionally cite a page with [[page:P]] when paragraph granularity is not "
+        "available, but prefer paragraph citations. "
+        'Example: "The Sun is a G-type star [[para:3]]." '
         "If the answer is not in the context, say that you do not know."
     )
 

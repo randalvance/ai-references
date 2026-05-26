@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
+
+const DEFAULT_PAGE_WIDTH_PT = 612
+const DEFAULT_PAGE_HEIGHT_PT = 792
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -42,14 +45,6 @@ function renderAnswer(text, onCitationClick) {
   return parts
 }
 
-function escapeHtml(s) {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
 export default function App() {
   const [doc, setDoc] = useState(null) // { id, kind, url, paragraphs? }
   const [question, setQuestion] = useState('')
@@ -61,6 +56,7 @@ export default function App() {
   const [numPages, setNumPages] = useState(0)
   const [highlightPara, setHighlightPara] = useState(null)
   const [pageWidth, setPageWidth] = useState(800)
+  const [renderedPage, setRenderedPage] = useState(null) // { pageNumber, widthPx, heightPx, pdfWidth, pdfHeight }
   const viewerRef = useRef(null)
 
   useEffect(() => {
@@ -73,26 +69,26 @@ export default function App() {
     return () => ro.disconnect()
   }, [doc])
 
-  const highlightParaText = useMemo(() => {
+  const highlightBand = useMemo(() => {
     if (!highlightPara || !doc?.paragraphs) return null
-    return doc.paragraphs.find((p) => p.index === highlightPara)?.text || null
-  }, [highlightPara, doc])
-
-  const textRenderer = useCallback(
-    (item) => {
-      const str = item.str
-      if (!highlightParaText || !str || !str.trim()) return escapeHtml(str)
-      // Wrap the span if its text is a slice of the highlighted paragraph.
-      // Reportlab renders one text item per line, so each item.str is
-      // typically a continuous substring of the paragraph's text.
-      const trimmed = str.trim()
-      if (trimmed.length >= 2 && highlightParaText.includes(trimmed)) {
-        return `<mark class="para-highlight">${escapeHtml(str)}</mark>`
-      }
-      return escapeHtml(str)
-    },
-    [highlightParaText],
-  )
+    const para = doc.paragraphs.find((p) => p.index === highlightPara)
+    if (!para || para.page !== page || para.top == null || para.bottom == null) {
+      return null
+    }
+    // Backend returns top-left origin coords in PDF points (top < bottom).
+    const usingRendered = renderedPage && renderedPage.pageNumber === page
+    const pdfWidth = usingRendered ? renderedPage.pdfWidth : doc.page_width || DEFAULT_PAGE_WIDTH_PT
+    const pdfHeight = usingRendered ? renderedPage.pdfHeight : doc.page_height || DEFAULT_PAGE_HEIGHT_PT
+    const canvasWidthPx = usingRendered ? renderedPage.widthPx : pageWidth
+    const canvasHeightPx = usingRendered ? renderedPage.heightPx : (pdfHeight * pageWidth) / pdfWidth
+    const scale = canvasWidthPx / pdfWidth
+    return {
+      topPx: para.top * scale,
+      heightPx: Math.max(8, (para.bottom - para.top) * scale),
+      widthPx: canvasWidthPx,
+      canvasHeightPx,
+    }
+  }, [highlightPara, doc, page, pageWidth, renderedPage])
 
   async function handleUpload(e) {
     const file = e.target.files?.[0]
@@ -111,6 +107,8 @@ export default function App() {
         kind: data.kind,
         url: data.url,
         paragraphs: data.paragraphs,
+        page_width: data.page_width,
+        page_height: data.page_height,
       })
       setPage(1)
       setNumPages(0)
@@ -232,13 +230,35 @@ export default function App() {
                   onLoadError={(err) => setError(`Failed to load PDF: ${err.message}`)}
                   loading={<div className="placeholder">Loading PDF…</div>}
                 >
-                  <Page
-                    pageNumber={page}
-                    width={pageWidth}
-                    renderAnnotationLayer={false}
-                    renderTextLayer={true}
-                    customTextRenderer={textRenderer}
-                  />
+                  <div className="pdf-page-stack">
+                    <Page
+                      pageNumber={page}
+                      width={pageWidth}
+                      renderAnnotationLayer={false}
+                      renderTextLayer={true}
+                      onRenderSuccess={(p) => {
+                        const vp = p.getViewport({ scale: 1 })
+                        setRenderedPage({
+                          pageNumber: p.pageNumber,
+                          pdfWidth: vp.width,
+                          pdfHeight: vp.height,
+                          widthPx: pageWidth,
+                          heightPx: (vp.height * pageWidth) / vp.width,
+                        })
+                      }}
+                    />
+                    {highlightBand && (
+                      <div
+                        className="para-highlight-band"
+                        style={{
+                          top: `${highlightBand.topPx}px`,
+                          left: 0,
+                          width: `${highlightBand.widthPx}px`,
+                          height: `${highlightBand.heightPx}px`,
+                        }}
+                      />
+                    )}
+                  </div>
                 </Document>
               </div>
             </div>

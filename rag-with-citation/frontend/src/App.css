@@ -94,11 +94,20 @@ header p {
   height: auto !important;
 }
 
-.react-pdf__Page__textContent mark.para-highlight {
-  background: #fde68a;
-  color: transparent;
-  padding: 0;
+.pdf-page-stack {
+  position: relative;
+  display: block;
+  width: max-content;
+  margin: 0 auto;
+}
+
+.para-highlight-band {
+  position: absolute;
+  background-color: rgba(252, 211, 77, 0.5);
+  box-shadow: 0 0 0 1px rgba(202, 138, 4, 0.6);
+  pointer-events: none;
   border-radius: 2px;
+  z-index: 30;
 }
 
 .placeholder {
