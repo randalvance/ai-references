@@ -6,7 +6,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate
 
-from storage import PAGE_HEIGHT_PT, PAGE_MARGIN_PT
+from storage import PAGE_HEIGHT_PT, PAGE_MARGIN_PT, PAGE_WIDTH_PT
 
 
 def extract_docx_paragraphs(path: Path) -> list[tuple[int, str]]:
@@ -89,6 +89,8 @@ def docx_paragraph_payload(n: int, text: str, info: dict) -> dict:
         "index": n,
         "text": text,
         "page": top_page,
+        "left": PAGE_MARGIN_PT,
+        "right": PAGE_WIDTH_PT - PAGE_MARGIN_PT,
         "top": top,
         "bottom": bottom,
     }

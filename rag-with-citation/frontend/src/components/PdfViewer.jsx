@@ -102,7 +102,7 @@ export function PdfViewer({
                     className="para-highlight-band"
                     style={{
                       top: `${highlightBand.topPx}px`,
-                      left: 0,
+                      left: `${highlightBand.leftPx}px`,
                       width: `${highlightBand.widthPx}px`,
                       height: `${highlightBand.heightPx}px`,
                     }}

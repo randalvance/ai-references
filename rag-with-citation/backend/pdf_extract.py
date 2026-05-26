@@ -15,8 +15,9 @@ class PdfExtraction(NamedTuple):
 def extract_pdf_paragraphs(path: Path) -> PdfExtraction:
     """Extract paragraphs from a native PDF using PyMuPDF.
 
-    Each paragraph has: index, text, page (1-based), top, bottom
-    in PDF points with a top-left origin.
+    Each paragraph has: index, text, page (1-based), left, right, top, bottom
+    in PDF points with a top-left origin. Each column in a multi-column layout
+    is a separate block (and therefore a separate paragraph index).
     """
     doc = fitz.open(str(path))
     paragraphs: list[dict] = []
@@ -37,12 +38,14 @@ def extract_pdf_paragraphs(path: Path) -> PdfExtraction:
             ).strip()
             if not text:
                 continue
-            _, y0, _, y1 = block["bbox"]
+            x0, y0, x1, y1 = block["bbox"]
             idx += 1
             paragraphs.append({
                 "index": idx,
                 "text": text,
                 "page": page_idx,
+                "left": x0,
+                "right": x1,
                 "top": y0,
                 "bottom": y1,
             })
